@@ -8,7 +8,7 @@ from datetime import datetime
 from shutil import copyfile
 
 
-########## Fully connected networks ##########
+# fully-connected networks
 
 def single_layer_net(input_dim, output_dim,
                      hidden_layer_size=256,
@@ -45,7 +45,7 @@ def two_layer_net(input_dim, output_dim,
     return net
 
 
-########## torch tensor manipulation functions ##########
+# torch tensor manipulation functions
 
 def array_to_tensor(array, device):
     """Convert numpy array to tensor."""
@@ -64,7 +64,7 @@ def copy_parameters(model1, model2):
     model1.load_state_dict(model2.state_dict())
 
 
-########## Config file manipulation and logging functions ##########
+# config file manipulation and logging functions
 
 def load_config(filename):
     """Load and return a config file."""
