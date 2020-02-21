@@ -4,14 +4,13 @@ with open("README.md", "r") as fh:
     long_description = fh.read()
 
 setuptools.setup(
-    name="wesutils", # Replace with your own username
+    name="wesutils",
     version="0.0.1",
     author="Wesley Suttle",
-    author_email="author@example.com",
     description="my most commonly used utilities",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/pypa/sampleproject",
+    url="https://github.com/wessle/wesutils",
     packages=setuptools.find_packages(),
     classifiers=[
         "Programming Language :: Python :: 3",
