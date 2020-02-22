@@ -99,3 +99,32 @@ def load_object(filename):
     """Load an object, e.g. a list of returns to be plotted."""
     with open(filename, 'rb') as fp:
         return pickle.load(fp)
+
+
+# experience replay buffer
+
+class Buffer:
+    """
+    Circular experience replay buffer for RL environments.
+    """
+    
+    def __init__(self, max_length):
+        self.buffer = deque(maxlen=max_length)
+        
+    def sample_batch(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        states, actions, rewards, costs, next_states = [], [], [], [], []
+        for elem in batch:
+            s, a, (r, c), s2 = elem
+            states.append(s)
+            actions.append(a)
+            rewards.append(r)
+            costs.append(c)
+            next_states.append(s2)
+        return (states, actions, rewards, costs, next_states)
+    
+    def add(self, sample):
+        self.buffer.append(sample)
+
+    def __len__(self):
+        return len(self.buffer)
