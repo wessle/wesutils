@@ -6,6 +6,7 @@ import pickle
 import os
 from datetime import datetime
 from shutil import copyfile
+import random
 
 
 # fully-connected networks
@@ -21,7 +22,7 @@ def single_layer_net(input_dim, output_dim,
 
     net = torch.nn.Sequential(
         torch.nn.Linear(input_dim, hidden_layer_size),
-        active(),
+        activ(),
         torch.nn.Linear(hidden_layer_size, output_dim))
     return net
 
@@ -99,3 +100,22 @@ def load_object(filename):
     """Load an object, e.g. a list of returns to be plotted."""
     with open(filename, 'rb') as fp:
         return pickle.load(fp)
+
+
+class Buffer:
+    """
+    Circular experience replay buffer for RL environments.
+    """
+    
+    def __init__(self, maxlen):
+        self.buffer = deque(maxlen=maxlen)
+        
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        return tuple(list(x) for x in zip(*batch))
+    
+    def append(self, sample):
+        self.buffer.append(sample)
+
+    def __len__(self):
+        return len(self.buffer)
