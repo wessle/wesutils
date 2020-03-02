@@ -7,6 +7,9 @@ import os
 from datetime import datetime
 from shutil import copyfile
 import random
+import numbers
+import functools
+import operator
 
 
 # fully-connected networks
@@ -104,18 +107,65 @@ def load_object(filename):
 
 class Buffer:
     """
-    Circular experience replay buffer for RL environments.
+    Circular experience replay buffer for RL environments built around
+    collections.deque.
+
+    The 'maxlen' keyword argument must be passed. An optional iterable
+    can also be passed to initialize the buffer.
     """
     
-    def __init__(self, maxlen):
-        self.buffer = deque(maxlen=maxlen)
+    def __init__(self, *args, maxlen=None):
+
+        assert len(args) <= 1, 'Pass either no iterable or 1 iterable'
+        assert maxlen is not None, '"maxlen" must be specified'
+
+        deque_input = [] if len(args) == 0 else args[0]
+        self.__buffer = deque(deque_input, maxlen)
+
+    @property
+    def buffer(self):
+        return self.__buffer
+
+    def __eq__(self, other):
+        return (len(self) == len(other)) and \
+                all(x == y for x, y in zip(self, other))
+
+    def __hash__(self):
+        hashes = (hash(x) for x in self)
+        return functools.reduce(operator.xor, hashes, 0)
+
+    def __getitem__(self, index):
+        """Return self[index]."""
+
+        if isinstance(index, numbers.Integral):
+            return self.__buffer[index]
+        else:
+            msg = '{.__name__} indices must be integers'
+            raise TypeError(msg.format(type(self)))
+
+    def __iter__(self):
+        """Return iter(self)."""
+
+        return iter(self.__buffer)
+
+    def __len__(self):
+        """Return length of buffer."""
+
+        return len(self.__buffer)
+
+    def __repr__(self):
+        """Return repr(self)."""
+        
+        index = repr(self.__buffer).find('[')
+        return 'Buffer(' + repr(self.__buffer)[index:]
         
     def sample(self, batch_size):
-        batch = random.sample(self.buffer, batch_size)
+        """Randomly sample a batch."""
+
+        batch = random.sample(self.__buffer, batch_size)
         return tuple(list(x) for x in zip(*batch))
     
     def append(self, sample):
-        self.buffer.append(sample)
+        """Append a sample."""
 
-    def __len__(self):
-        return len(self.buffer)
+        self.__buffer.append(sample)
