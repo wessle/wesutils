@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
+import torch.nn as nn
 import torch.utils.data
 import copy
 import warnings
@@ -281,7 +282,10 @@ class SACAgent(RLAgent):
         self.pi = policy_network
         self.Q1 = critic_network
         self.Q2 = copy.deepcopy(self.Q1)
+        self.Q1target = copy.deepcopy(self.Q1)
+        self.Q2target = copy.deepcopy(self.Q2)
         self.alpha = alpha_init
+        self.log_alpha = torch.zeros(1, requires_grad=True)
         
         # enable CUDA, if stipulated and possible
         self.__cuda_enabled = enable_cuda
@@ -291,14 +295,16 @@ class SACAgent(RLAgent):
         # define miscellaneous hyperparameters
         self.gamma = gamma
         self.tau = tau
-        self.alpha_lr = alpha_lr
         self.entropy_target = -self.action_dim if entropy_target is not None \
                 else entropy_target
 
-        # define optimizers
+        # define optimizers and losses
         self.pi_optim = optimizer(self.pi.parameters(), lr=policy_lr)
         self.Q1_optim = optimizer(self.Q1.parameters(), lr=critic_lr)
+        self.Q1_loss = nn.MSELoss()
         self.Q2_optim = optimizer(self.Q2.parameters(), lr=critic_lr)
+        self.Q2_loss = nn.MSELoss()
+        self.alpha_optim = optimizer([self.log_alpha], lr=alpha_lr)
 
         # keep previous state and action
         self.state = None
@@ -326,3 +332,99 @@ class SACAgent(RLAgent):
         self.pi.to(self.device)
         self.Q1.to(self.device)
         self.Q2.to(self.device)
+        self.Q1target.to(self.device)
+        self.Q2target.to(self.device)
+        self.log_alpha.to(self.device)
+
+    def average_params(self, target_network, other_network):
+        for target_param, other_param in zip(target_network.parameters(),
+                                             other_network.parameters()):
+            target_param.data.copy_(
+                self.tau * other_param + (1 - self.tau) * target_param)
+            
+    def sample_action(self, state):
+        """Get an action based on the current state."""
+
+        self.state = state
+        state = torch.FloatTensor(state).to(self.device)
+        self.action = self.pi.sample(
+            state, no_log_prob=True).cpu().detach().numpy()
+        return self.action
+
+    def update(self, reward, next_state):
+        """Perform the update step."""
+
+        assert self.state is not None, \
+                "sample_action must be called before update"
+
+        new_sample = (self.state, self.action, reward, next_state)
+        self.buffer.append(new_sample)
+
+        if len(self.buffer) >= self.batch_size:
+
+            states, actions, rewards, next_states = utils.arrays_to_tensors(
+                self.buffer.sample(self.batch_size), self.device)
+            states = states.unsqueeze(dim=1)
+            rewards = rewards.unsqueeze(dim=1)
+
+            # Q network updates
+            with torch.no_grad():
+                next_actions, log_probs = self.pi.sample(next_states)
+                Q_target_inputs = torch.cat([next_states, next_actions], dim=1)
+                Q1targets = self.Q1target(Q_target_inputs)
+                Q2targets = self.Q2target(Q_target_inputs)
+                Q_mins = torch.min(Q1targets, Q2targets)
+                Q_targets = rewards + self.gamma * (Q_mins - self.alpha * log_probs)
+
+            Q_inputs = torch.cat([states, actions], dim=1)
+            Q1_loss = self.Q1_loss(self.Q1(Q_inputs), Q_targets)
+            Q2_loss = self.Q2_loss(self.Q2(Q_inputs), Q_targets)
+            self.Q1_optim.zero_grad()
+            self.Q2_optim.zero_grad()
+            Q1_loss.backward()
+            Q2_loss.backward()
+            if self.grad_clip_radius is not None:
+                nn.utils.clip_grad_norm_(self.Q1.parameters(),
+                                         self.grad_clip_radius)
+                nn.utils.clip_grad_norm_(self.Q2.parameters(),
+                                         self.grad_clip_radius)
+            self.Q1_optim.step()
+            self.Q2_optim.step()
+
+            # policy network update
+            hypothetical_actions, log_probs = self.pi.sample(states)
+            Q_inputs = torch.cat([states, hypothetical_actions], dim=1)
+            with torch.no_grad():
+                Q1targets = self.Q1target(Q_inputs)
+                Q2targets = self.Q2target(Q_inputs)
+                Q_mins = torch.min(Q1targets, Q2_targets)
+            pi_loss = self.alpha * log_probs - Q_mins
+            self.pi_optim.zero_grad()
+            pi_loss.backward()
+            if self.grad_clip_radius is not None:
+                nn.utils.clip_grad_norm_(self.pi.parameters(),
+                                         self.grad_clip_radius)
+            self.pi_optim.step()
+
+            # alpha update
+            alpha_loss = -self.log_alpha.exp() * (
+                log_probs.detach().mean() + self.entropy_target)
+            self.alpha_optim.zero_grad()
+            alpha_loss.backward()
+            self.alpha_optim.step()
+
+            # Q network parameter averaging
+            self.average_params(self.Q1target, self.Q1)
+            self.average_params(self.Q2target, self.Q2)
+
+
+
+
+
+
+
+
+
+
+
+# end

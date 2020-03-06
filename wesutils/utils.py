@@ -1,5 +1,8 @@
 import numpy as np
 import torch
+import torch.distributions as td
+import torch.nn.functional as F
+import torch.nn as nn
 from collections import deque
 import yaml
 import pickle
@@ -21,12 +24,12 @@ def single_layer_net(input_dim, output_dim,
     Generate a fully-connected single-layer network for quick use.
     """
 
-    activ = eval('torch.nn.' + activation)
+    activ = eval('nn.' + activation)
 
-    net = torch.nn.Sequential(
-        torch.nn.Linear(input_dim, hidden_layer_size),
+    net = nn.Sequential(
+        nn.Linear(input_dim, hidden_layer_size),
         activ(),
-        torch.nn.Linear(hidden_layer_size, output_dim))
+        nn.Linear(hidden_layer_size, output_dim))
     return net
 
 def two_layer_net(input_dim, output_dim,
@@ -37,14 +40,14 @@ def two_layer_net(input_dim, output_dim,
     Generate a fully-connected two-layer network for quick use.
     """
     
-    activ = eval('torch.nn.' + activation)
+    activ = eval('nn.' + activation)
 
-    net = torch.nn.Sequential(
-        torch.nn.Linear(input_dim, hidden_layer1_size),
+    net = nn.Sequential(
+        nn.Linear(input_dim, hidden_layer1_size),
         activ(),
-        torch.nn.Linear(hidden_layer1_size, hidden_layer2_size),
+        nn.Linear(hidden_layer1_size, hidden_layer2_size),
         activ(),
-        torch.nn.Linear(hidden_layer2_size, output_dim)
+        nn.Linear(hidden_layer2_size, output_dim)
     )
     return net
 
@@ -169,3 +172,117 @@ class Buffer:
         """Append a sample."""
 
         self.__buffer.append(sample)
+
+
+# policy networks
+
+class PolicyNetwork(nn.Module):
+    """Base class for stochastic policy networks."""
+
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, state):
+        """Take state as input, then output the parameters of the policy."""
+
+        raise NotImplemented("forward not implemented.")
+
+    def sample(self, state):
+        """
+        Sample an action based on the model parameters given the current state.
+        """
+
+        raise NotImplemented("sample not implemented.")
+
+
+class GaussianPolicyNetworkBase(PolicyNetwork):
+    """
+    Base class for Gaussian policies.
+
+    Desired two-headed network outputting mean and covariance needs to be
+    implemented.
+    """
+
+    def __init__(self, state_dim, action_dim,
+                 log_std_min=-20, log_std_max=5):
+
+        super().__init__()
+
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.log_std_min = log_std_min
+        self.log_std_max = log_std_max
+
+    def sample(self, state, no_log_prob=False):
+        """
+        Sample from the Gaussian distribution with mean and covariance
+        output by the two-headed policy network evaluated on the current state.
+        """
+
+        mean, cov = self.forward(state)
+        dist = td.multivariate_normal.MultivariateNormal(mean, cov)
+        action = dist.sample()
+        
+        return_val = (action, dist.log_prob(action)) if not no_log_prob else action
+        return return_val
+
+
+class GaussianPolicyTwoLayer(GaussianPolicyNetworkBase):
+    """
+    Simple two-layer, two-headed Gaussian policy network.
+
+    If simple_cov == True, the covariance matrix always takes the form
+        
+        sigma * I,
+
+    where sigma is a scalar and I is an identity matrix with appropriate
+    dimensions.
+    """
+
+    def __init__(self, state_dim, action_dim,
+                 simple_cov=True,
+                 hidden_layer1_size=256,
+                 hidden_layer2_size=256,
+                 activation='relu',
+                 log_std_min=-20, log_std_max=3,
+                 weight_init_std=0.0001):
+
+        super().__init__(state_dim, action_dim,
+                         log_std_min, log_std_max)
+
+        self.simple_cov = simple_cov
+        self.activation = eval('F.' + activation) # same activation everywhere
+        
+        # set the output dimension of the log_std network
+        cov_output_dim = 1 if self.simple_cov else self.action_dim
+
+        # define the network layers
+        self.linear1 = nn.Linear(state_dim, hidden_layer1_size)
+        self.linear2 = nn.Linear(hidden_layer1_size, hidden_layer2_size)
+        self.mean = nn.Linear(hidden_layer2_size, self.action_dim)
+        self.log_std = nn.Linear(hidden_layer2_size, cov_output_dim)
+
+        # initialize the weights of the layers
+        nn.init.normal_(self.linear1.weight, std=weight_init_std)
+        nn.init.normal_(self.linear1.bias, std=weight_init_std)
+        nn.init.normal_(self.linear2.weight, std=weight_init_std)
+        nn.init.normal_(self.linear2.bias, std=weight_init_std)
+        nn.init.normal_(self.mean.weight, std=weight_init_std)
+        nn.init.normal_(self.mean.bias, std=weight_init_std)
+        nn.init.normal_(self.log_std.weight, std=weight_init_std)
+        nn.init.normal_(self.log_std.bias, std=weight_init_std)
+
+    def forward(self, state):
+        x = self.activation(self.linear2(self.activation(self.linear1(state))))
+        mean = self.mean(x)
+        cov = torch.clamp(self.log_std(x),
+                          self.log_std_min, self.log_std_max).exp()
+
+        return mean, torch.eye(self.action_dim) * cov
+
+
+
+
+
+
+# end
