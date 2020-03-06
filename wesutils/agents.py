@@ -45,8 +45,11 @@ class GaussianNoise(NoiseModel):
 class RLAgent:
     """General parent class for agents using specific algorithms."""
 
-    def __init__(self, batch_size):
-        pass
+    def __init__(self, batch_size, action_dim, buff_len):
+        
+        self.batch_size = batch_size
+        self.action_dim = action_dim
+        self.buffer = utils.Buffer(maxlen=buff_len)
     
     def sample_action(self, state):
         """Generate an action based on a given state. Save and return the
@@ -62,32 +65,31 @@ class RLAgent:
 
 
 class DDPGAgent(RLAgent):
-    """Agent that carries out the DDPG algorithm."""
+    """
+    Agent that carries out the DDPG algorithm.
+
+    The action noise is Gaussian by default.
+    """
     
-    def __init__(self, batch_size, action_dim,
+    def __init__(self, batch_size, action_dim, buff_len,
                  policy_network, critic_network, policy_lr, critic_lr,
                  gamma, tau,
-                 buff_len=100000,
-                 action_noise=GaussianNoise, action_noise_cov=0.1,
+                 action_noise_cov=0.1,
                  enable_cuda=True, optimizer=torch.optim.Adam,
                  grad_clip_radius=None, action_clip_radius=None):
         
-        RLAgent.__init__(self, batch_size)
-        
-        # buffer and sample batch size
-        self.buffer = utils.Buffer(maxlen=100000)
-        self.N = batch_size
+        RLAgent.__init__(self, batch_size, action_dim, buff_len)
         
         # networks
-        self.action_noise = action_noise(action_dim,
-                                         cov=action_noise_cov * np.eye(action_dim))
+        self.action_noise = GaussianNoise(action_dim,
+                                          cov=action_noise_cov * np.eye(action_dim))
         self.pi = policy_network #.to(self.device)
         self.target_pi = copy.deepcopy(policy_network)
         self.Q = critic_network #.to(self.device)
         self.target_Q = copy.deepcopy(critic_network)
         
-        self._enable_cuda = enable_cuda
-        self.enable_cuda(self._enable_cuda, warn=False)
+        self.__cuda_enabled = enable_cuda
+        self.enable_cuda(self.__cuda_enabled, warn=False)
         # NOTE: self.device is defined when self.enable_cuda is called!
         
         # discount factor and tau
@@ -107,6 +109,9 @@ class DDPGAgent(RLAgent):
         self.grad_clip_radius = grad_clip_radius
         self.action_clip_radius = action_clip_radius
         
+    @property
+    def cuda_enabled(self):
+        return self.__cuda_enabled
         
     def sample_action(self, state):
         """Get an action based on the current state."""
@@ -124,9 +129,6 @@ class DDPGAgent(RLAgent):
         for param1, param2 in zip(params1, params2):
             param1.data.copy_(
                     self.tau*param2.data + (1.0 - self.tau)*param1.data)
-            
-    def _convert_to_tensor(self, x):
-        return torch.FloatTensor(x).to(self.device)
 
     def _save_rewards(self, filename):
         """Save accumulated rewards."""
@@ -143,9 +145,9 @@ class DDPGAgent(RLAgent):
         new_sample = (self.state, self.action, reward, next_state)
         self.buffer.append(new_sample)
         
-        if update_Q and len(self.buffer) >= self.N:
+        if update_Q and len(self.buffer) >= self.batch_size:
             states, actions, rewards, next_states = utils.arrays_to_tensors(
-                    self.buffer.sample(self.N), self.device)
+                    self.buffer.sample(self.batch_size), self.device)
             
             with torch.no_grad():
                 target_actions = self.target_pi(next_states)
@@ -192,9 +194,9 @@ class DDPGAgent(RLAgent):
                           "initializing optimizers can give errors when using "
                           "optimizers other than SGD or Adam!")
         
-        self._enable_cuda = enable_cuda
+        self.__cuda_enabled = enable_cuda
         self.device = torch.device(
-                'cuda' if torch.cuda.is_available() and self._enable_cuda \
+                'cuda' if torch.cuda.is_available() and self.__cuda_enabled \
                 else 'cpu')
         self.pi.to(self.device)
         self.target_pi.to(self.device)
@@ -224,7 +226,7 @@ class DDPGAgent(RLAgent):
         """Save state_dicts of models and optimizers."""
         
         torch.save({
-                'using_cuda': self._enable_cuda,
+                'using_cuda': self.__cuda_enabled,
                 'pi_state_dict': self.pi.state_dict(),
                 'target_pi_state_dict': self.target_pi.state_dict(),
                 'Q_state_dict': self.Q.state_dict(),
@@ -258,3 +260,69 @@ class DDPGAgent(RLAgent):
             self.target_Q.eval()
         
         self.enable_cuda(checkpoint['using_cuda'], warn=False)
+
+
+class SACAgent(RLAgent):
+    """Agent using the SAC algorithm."""
+
+    # TODO: add an optional action transformation function
+
+    def __init__(self, batch_size, action_dim, buff_len,
+                 policy_network, critic_network,
+                 policy_lr, critic_lr, alpha_lr,
+                 gamma=0.99, tau=0.005,
+                 alpha_init=1.0, entropy_target=None,
+                 enable_cuda=True, optimizer=torch.optim.Adam,
+                 grad_clip_radius=None):
+
+        RLAgent.__init__(self, batch_size, action_dim, buff_len)
+
+        # create networks and alpha
+        self.pi = policy_network
+        self.Q1 = critic_network
+        self.Q2 = copy.deepcopy(self.Q1)
+        self.alpha = alpha_init
+        
+        # enable CUDA, if stipulated and possible
+        self.__cuda_enabled = enable_cuda
+        self.enable_cuda(self.__cuda_enabled, warn=False)
+        # NOTE: self.device is defined when self.enable_cuda is called!
+
+        # define miscellaneous hyperparameters
+        self.gamma = gamma
+        self.tau = tau
+        self.alpha_lr = alpha_lr
+        self.entropy_target = -self.action_dim if entropy_target is not None \
+                else entropy_target
+
+        # define optimizers
+        self.pi_optim = optimizer(self.pi.parameters(), lr=policy_lr)
+        self.Q1_optim = optimizer(self.Q1.parameters(), lr=critic_lr)
+        self.Q2_optim = optimizer(self.Q2.parameters(), lr=critic_lr)
+
+        # keep previous state and action
+        self.state = None
+        self.action = None
+
+        # clip gradients?
+        self.grad_clip_radius = grad_clip_radius
+
+    @property
+    def cuda_enabled(self):
+        return self.__cuda_enabled
+
+    def enable_cuda(self, enable_cuda=True, warn=True):
+        """Enable or disable cuda and update models."""
+        
+        if warn:
+            warnings.warn("Converting models between 'cpu' and 'cuda' after "
+                          "initializing optimizers can give errors when using "
+                          "optimizers other than SGD or Adam!")
+        
+        self.__cuda_enabled = enable_cuda
+        self.device = torch.device(
+                'cuda' if torch.cuda.is_available() and self.__cuda_enabled \
+                else 'cpu')
+        self.pi.to(self.device)
+        self.Q1.to(self.device)
+        self.Q2.to(self.device)
