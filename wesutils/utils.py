@@ -220,8 +220,9 @@ class GaussianPolicyNetworkBase(PolicyNetwork):
         """
 
         mean, cov = self.forward(state)
-        dist = td.multivariate_normal.MultivariateNormal(mean, cov)
-        action = dist.sample()
+        dist = td.multivariate_normal.MultivariateNormal(
+            mean, torch.eye(self.action_dim) * cov)
+        action = dist.rsample()
         
         return_val = (action, dist.log_prob(action)) if not no_log_prob else action
         return return_val
@@ -277,8 +278,9 @@ class GaussianPolicyTwoLayer(GaussianPolicyNetworkBase):
         mean = self.mean(x)
         cov = torch.clamp(self.log_std(x),
                           self.log_std_min, self.log_std_max).exp()
+        cov = cov.unsqueeze(dim=2) * torch.eye(self.action_dim)
 
-        return mean, torch.eye(self.action_dim) * cov
+        return mean, cov
 
 
 

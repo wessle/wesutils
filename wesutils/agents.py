@@ -295,7 +295,7 @@ class SACAgent(RLAgent):
         # define miscellaneous hyperparameters
         self.gamma = gamma
         self.tau = tau
-        self.entropy_target = -self.action_dim if entropy_target is not None \
+        self.entropy_target = -self.action_dim if entropy_target is None \
                 else entropy_target
 
         # define optimizers and losses
@@ -364,12 +364,15 @@ class SACAgent(RLAgent):
 
             states, actions, rewards, next_states = utils.arrays_to_tensors(
                 self.buffer.sample(self.batch_size), self.device)
+            actions = actions.squeeze()
             states = states.unsqueeze(dim=1)
             rewards = rewards.unsqueeze(dim=1)
+            next_states = next_states.unsqueeze(dim=1)
 
             # Q network updates
             with torch.no_grad():
                 next_actions, log_probs = self.pi.sample(next_states)
+                log_probs = log_probs.unsqueeze(dim=1)
                 Q_target_inputs = torch.cat([next_states, next_actions], dim=1)
                 Q1targets = self.Q1target(Q_target_inputs)
                 Q2targets = self.Q2target(Q_target_inputs)
@@ -397,8 +400,8 @@ class SACAgent(RLAgent):
             with torch.no_grad():
                 Q1targets = self.Q1target(Q_inputs)
                 Q2targets = self.Q2target(Q_inputs)
-                Q_mins = torch.min(Q1targets, Q2_targets)
-            pi_loss = self.alpha * log_probs - Q_mins
+                Q_mins = torch.min(Q1targets, Q2targets)
+            pi_loss = (self.alpha * log_probs - Q_mins).mean()
             self.pi_optim.zero_grad()
             pi_loss.backward()
             if self.grad_clip_radius is not None:
