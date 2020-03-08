@@ -158,7 +158,6 @@ class Buffer:
 
     def __repr__(self):
         """Return repr(self)."""
-        
         index = repr(self.__buffer).find('[')
         return 'Buffer(' + repr(self.__buffer)[index:]
         
@@ -172,6 +171,48 @@ class Buffer:
         """Append a sample."""
 
         self.__buffer.append(sample)
+
+
+class TorchBuffer:
+    """
+    Buffer for storing tuples of flat numpy arrays as a 2D torch tensor.
+
+    This can drastically reduce the number of translations between numpy
+    arrays and torch tensors needed during RL algorithm training.
+
+    Note that sampling occurs with replacement.
+    """
+
+    def __init__(self, maxlen=100000):
+
+        self.maxlen = maxlen
+        self.currlen = 0
+        self.currindex = 0
+        self.arraylens = None
+        self.__buffer = None
+
+    @property
+    def buffer(self):
+        return self.__buffer
+
+    def append(self, array_tuple):
+        """Add a new entry to the buffer."""
+
+        self.currlen = min(self.currlen + 1, self.maxlen)
+        self.currindex = (self.currindex + 1) % self.maxlen
+
+        if self.__buffer is None:
+            self.arraylens = [len(elem) for elem in array_tuple]
+            self.__buffer = torch.zeros(self.maxlen, sum(self.arraylens))
+
+        self.__buffer[self.currindex] = torch.cat(
+            [torch.tensor(elem) for elem in array_tuple], 0)
+
+    def sample(self, batch_size):
+        """Randomly sample a batch."""
+
+        indices = torch.randint(0, self.currlen, size=(batch_size,))
+        return torch.split(self.__buffer[indices], self.arraylens, 1)
 
 
 # policy networks
