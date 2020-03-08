@@ -198,6 +198,9 @@ class TorchBuffer:
     def append(self, array_tuple):
         """Add a new entry to the buffer."""
 
+        assert all(isinstance(elem, np.ndarray) for elem in array_tuple), \
+                'All elements of the input tuple must be numpy arrays'
+
         self.currlen = min(self.currlen + 1, self.maxlen)
         self.currindex = (self.currindex + 1) % self.maxlen
 
