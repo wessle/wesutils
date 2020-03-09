@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.utils.data
 import copy
 import warnings
+import numbers
 
 import wesutils.utils as utils
 
@@ -277,6 +278,7 @@ class SACAgent(RLAgent):
                  grad_clip_radius=None):
 
         RLAgent.__init__(self, batch_size, action_dim, buff_len)
+        self.buffer = utils.TorchBuffer(buff_len)
 
         # create networks and alpha
         self.pi = policy_network
@@ -329,12 +331,14 @@ class SACAgent(RLAgent):
         self.device = torch.device(
                 'cuda' if torch.cuda.is_available() and self.__cuda_enabled \
                 else 'cpu')
-        self.pi.to(self.device)
         self.Q1.to(self.device)
         self.Q2.to(self.device)
         self.Q1target.to(self.device)
         self.Q2target.to(self.device)
         self.log_alpha.to(self.device)
+
+        # pi keeps track of the device internally, so set it separately
+        self.pi.set_device(self.device)
 
     def average_params(self, target_network, other_network):
         for target_param, other_param in zip(target_network.parameters(),
@@ -345,11 +349,15 @@ class SACAgent(RLAgent):
     def sample_action(self, state):
         """Get an action based on the current state."""
 
-        self.state = state
-        state = torch.FloatTensor(state).to(self.device)
-        self.action = self.pi.sample(
-            state, no_log_prob=True).cpu().detach().numpy()
-        return self.action
+        assert isinstance(state, np.ndarray), "state must be a numpy array."
+
+        with torch.no_grad():
+            self.state = torch.flatten(
+                torch.FloatTensor(state)).to(self.device)
+            self.action = torch.flatten(self.pi.sample(
+                self.state.reshape(1, max(state.shape)),
+                no_log_prob=True)).to(self.device)
+        return self.action.cpu().numpy()
 
     def update(self, reward, next_state):
         """Perform the update step."""
@@ -357,17 +365,24 @@ class SACAgent(RLAgent):
         assert self.state is not None, \
                 "sample_action must be called before update"
 
+        reward = float(reward)
+        assert isinstance(reward, numbers.Real), \
+                "reward must be a real number."
+
+        assert isinstance(next_state, np.ndarray), \
+                "next_state must be a numpy array."
+
+        reward = torch.tensor(reward).unsqueeze(0).to(self.device)
+        next_state = torch.FloatTensor(next_state).to(self.device)
+
         new_sample = (self.state, self.action, reward, next_state)
         self.buffer.append(new_sample)
 
         if len(self.buffer) >= self.batch_size:
-
-            states, actions, rewards, next_states = utils.arrays_to_tensors(
-                self.buffer.sample(self.batch_size), self.device)
-            actions = actions.squeeze()
-            states = states.unsqueeze(dim=1)
-            rewards = rewards.unsqueeze(dim=1)
-            next_states = next_states.unsqueeze(dim=1)
+            sample = self.buffer.sample(self.batch_size)
+            states, actions, rewards, next_states = sample if \
+                    self.device == torch.device('cpu') else \
+                    tuple(elem.to(self.device) for elem in sample)
 
             # Q network updates
             with torch.no_grad():

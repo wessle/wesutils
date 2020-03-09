@@ -175,10 +175,7 @@ class Buffer:
 
 class TorchBuffer:
     """
-    Buffer for storing tuples of flat numpy arrays as a 2D torch tensor.
-
-    This can drastically reduce the number of translations between numpy
-    arrays and torch tensors needed during RL algorithm training.
+    Buffer for storing tuples of flat torch tensors as a 2D torch tensor.
 
     Note that sampling occurs with replacement.
     """
@@ -188,34 +185,37 @@ class TorchBuffer:
         self.maxlen = maxlen
         self.currlen = 0
         self.currindex = 0
-        self.arraylens = None
+        self.tensorlens = None
         self.__buffer = None
 
     @property
     def buffer(self):
         return self.__buffer
 
-    def append(self, array_tuple):
+    def __len__(self):
+        return self.currlen
+
+    def append(self, tensor_tuple):
         """Add a new entry to the buffer."""
 
-        assert all(isinstance(elem, np.ndarray) for elem in array_tuple), \
-                'All elements of the input tuple must be numpy arrays'
+        assert all(torch.is_tensor(elem) for elem in tensor_tuple), \
+                'All elements of the input tuple must be torch tensors'
+
+        tensor_tuple = tuple(torch.flatten(elem) for elem in tensor_tuple)
+
+        if self.__buffer is None:
+            self.tensorlens = [len(elem) for elem in tensor_tuple]
+            self.__buffer = torch.zeros(self.maxlen, sum(self.tensorlens))
+        self.__buffer[self.currindex] = torch.cat(tensor_tuple, 0)
 
         self.currlen = min(self.currlen + 1, self.maxlen)
         self.currindex = (self.currindex + 1) % self.maxlen
-
-        if self.__buffer is None:
-            self.arraylens = [len(elem) for elem in array_tuple]
-            self.__buffer = torch.zeros(self.maxlen, sum(self.arraylens))
-
-        self.__buffer[self.currindex] = torch.cat(
-            [torch.tensor(elem) for elem in array_tuple], 0)
 
     def sample(self, batch_size):
         """Randomly sample a batch."""
 
         indices = torch.randint(0, self.currlen, size=(batch_size,))
-        return torch.split(self.__buffer[indices], self.arraylens, 1)
+        return torch.split(self.__buffer[indices], self.tensorlens, 1)
 
 
 # policy networks
@@ -257,6 +257,14 @@ class GaussianPolicyNetworkBase(PolicyNetwork):
         self.log_std_min = log_std_min
         self.log_std_max = log_std_max
 
+        self.device = torch.device('cpu')
+
+    def set_device(self, device):
+        """Set the device."""
+
+        self.device = device
+        self.to(self.device)
+
     def sample(self, state, no_log_prob=False):
         """
         Sample from the Gaussian distribution with mean and covariance
@@ -265,7 +273,7 @@ class GaussianPolicyNetworkBase(PolicyNetwork):
 
         mean, cov = self.forward(state)
         dist = td.multivariate_normal.MultivariateNormal(
-            mean, torch.eye(self.action_dim) * cov)
+            mean, torch.eye(self.action_dim).to(self.device) * cov)
         action = dist.rsample()
         
         return_val = (action, dist.log_prob(action)) if not no_log_prob else action
@@ -316,13 +324,15 @@ class GaussianPolicyTwoLayer(GaussianPolicyNetworkBase):
         nn.init.normal_(self.mean.bias, std=weight_init_std)
         nn.init.normal_(self.log_std.weight, std=weight_init_std)
         nn.init.normal_(self.log_std.bias, std=weight_init_std)
-
+        
     def forward(self, state):
-        x = self.activation(self.linear2(self.activation(self.linear1(state))))
+        x = self.activation(self.linear1(state))
+        x = self.activation(self.linear2(x))
         mean = self.mean(x)
         cov = torch.clamp(self.log_std(x),
                           self.log_std_min, self.log_std_max).exp()
-        cov = cov.unsqueeze(dim=2) * torch.eye(self.action_dim)
+        cov = cov.unsqueeze(dim=2) * torch.eye(
+            self.action_dim).to(self.device)
 
         return mean, cov
 
