@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="wesutils",
-    version="0.0.5",
+    version="0.0.7",
     author="Wesley Suttle",
     description="my most commonly used utilities",
     long_description=long_description,
