@@ -326,8 +326,8 @@ class GaussianPolicyTwoLayer(GaussianPolicyNetworkBase):
         nn.init.normal_(self.log_std.bias, std=weight_init_std)
         
     def forward(self, state):
-        if len(state.shape) == 1:
-            state = state.unsqueeze(dim=0)
+        if len(state.shape) < 2:
+            state = state.reshape(1, 1)
         x = self.activation(self.linear1(state))
         x = self.activation(self.linear2(x))
         mean = self.mean(x)
