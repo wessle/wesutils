@@ -218,6 +218,71 @@ class TorchBuffer:
         return torch.split(self.__buffer[indices], self.tensorlens, 1)
 
 
+class HeapBuffer:
+    """
+    Fixed-length buffer using a min-heap to keep only the elements with
+    largest keys. The buffer is configured to store and return 0- and 1D
+    torch tensors by default.
+
+    Note that the heap is (partially) ordered by the value of the first
+    element in each entry.
+
+    As of Python 3, a counter element has to be appended as the second
+    element of every sample, because heappush breaks when the second
+    elements can't be compared, e.g. when using torch.Tensors of different
+    sizes.
+    """
+
+    def __init__(self, buff_len, is_torch_buffer=True):
+
+        self.buff_len = buff_len
+        self.__heap = []
+        self.__is_torch_buffer = is_torch_buffer
+        self.counter = itertools.count()
+
+    @property
+    def buffer(self):
+        return self.__heap
+
+    @property
+    def is_torch_buffer(self):
+        return self.__is_torch_buffer
+
+    def __len__(self):
+        return len(self.__heap)
+
+    def __repr__(self):
+        """Return repr(self)."""
+
+        index = repr(self.__heap).find('[')
+        return 'HeapBuffer(' + repr(self.__heap)[index:] + ')'
+
+    def sample(self, batch_size):
+        """Randomly sample a batch."""
+
+        batch = random.sample(self.__heap, batch_size)
+        batch = enumerate(zip(*batch))
+        return tuple(list(elem) for i, elem in batch if i != 1) \
+                if not self.is_torch_buffer \
+                else tuple(torch.stack(elem, dim=0) for i, elem in batch \
+                           if i != 1)
+
+    def append(self, sample):
+        """
+        Append a sample.
+
+        Make sure to maintain the size of the heap and the heap invariant
+        once the heap has maximum length.
+        """
+
+        sample = (sample[0], next(self.counter), *sample[1:])
+
+        if len(self) < self.buff_len:
+            heapq.heappush(self.__heap, sample)
+        else:
+            heapq.heapreplace(self.__heap, sample)
+
+
 # policy networks
 
 class PolicyNetwork(nn.Module):
