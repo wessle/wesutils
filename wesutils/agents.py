@@ -271,8 +271,8 @@ class DoubleDQNAgent(RLAgent):
     """
     Agent carrying out the double DQN algorithm for maximization problems.
 
-    Action-selection is performed using a Boltmann distribution over the
-    current action estimates.
+    Action-selection can be performed using either a Boltmann distribution
+    over the current action estimates or an epsilon-greedy policy.
     """
 
     def __init__(self, batch_size, action_dim, buff_len,
