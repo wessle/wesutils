@@ -72,6 +72,9 @@ class DDPGAgent(RLAgent):
 
     The action noise is Gaussian by default.
     """
+
+    # NOTE: This agent minimizes cost instead of maximizing reward.
+    # TODO: Have the agent save 'dones'
     
     def __init__(self, batch_size, action_dim, buff_len,
                  policy_network, critic_network, policy_lr, critic_lr,
