@@ -284,6 +284,12 @@ class DoubleDQNAgent(RLAgent):
                  enable_cuda=True, optimizer=torch.optim.Adam,
                  grad_clip_radius=None):
 
+        if use_boltzmann:
+            warnings.warn("Using a Boltzmann action-selection policy can "
+                          "lead to instability if selection probabilities "
+                          "are not carefully chosen. Take care to use a "
+                          "reasonable temperature decay schedule.")
+
         RLAgent.__init__(self, batch_size, action_dim, buff_len)
 
         assert torch.is_tensor(actions), "actions must be stored as tensors"
@@ -291,7 +297,7 @@ class DoubleDQNAgent(RLAgent):
 
         self.actions = actions
         self.q = q_network
-        self.target_q = deepcopy(self.q)
+        self.target_q = copy.deepcopy(self.q)
 
         self.__cuda_enabled = enable_cuda
         self.enable_cuda(self.__cuda_enabled, warn=False)
@@ -458,6 +464,35 @@ class DoubleDQNAgent(RLAgent):
             # update target_q parameters
             self._polyak_average_params(self.target_q.parameters(),
                                         self.q.parameters())
+
+    def save_checkpoint(self, filename):
+        """Save state_dicts of models and optimizers."""
+        
+        torch.save({
+                'using_cuda': self.__cuda_enabled,
+                'q_state_dict': self.q.state_dict(),
+                'target_q_state_dict': self.target_q.state_dict(),
+                'q_optimizer_state_dict': self.q_optim.state_dict(),
+        }, filename)
+    
+    def load_checkpoint(self, filename, continue_training=True):
+        """Load state_dicts for models and optimizers."""
+        
+        checkpoint = torch.load(filename)
+        
+        self.q.load_state_dict(checkpoint['q_state_dict'])
+        self.target_q.load_state_dict(checkpoint['target_q_state_dict'])
+        self.q_optim.load_state_dict(checkpoint['q_optimizer_state_dict'])
+        
+        if continue_training:
+            self.q.train()
+            self.target_q.train()
+            
+        else:
+            self.q.eval()
+            self.target_q.eval()
+        
+        self.enable_cuda(checkpoint['using_cuda'], warn=False)
 
 
 class SACAgent(RLAgent):
