@@ -267,50 +267,38 @@ class DDPGAgent(RLAgent):
         self.enable_cuda(checkpoint['using_cuda'], warn=False)
 
 
-class DoubleDQNAgent(RLAgent):
+class DoubleDQNAgent:
     """
     Agent carrying out the double DQN algorithm for maximization problems.
 
-    Action-selection can be performed using either a Boltmann distribution
-    over the current action estimates or an epsilon-greedy policy.
+    Action selection is performed epsilon-greedily for now. Actions are
+    assumed to be integers.
     """
 
-    def __init__(self, batch_size, action_dim, buff_len,
-                 actions,
-                 q_network, q_lr, discount_gamma, polyak_tau,
-                 greedy_eps=0.05,
-                 use_boltzmann=False,
-                 boltzmann_temp=1.0,
-                 enable_cuda=True, optimizer=torch.optim.Adam,
+    def __init__(self, batch_size, action_dim, buff_maxlen,
+                 q_net, q_lr,
+                 discount_gamma=0.99, polyak_tau=0.005,
+                 greedy_eps=0.01, enable_cuda=False,
+                 optimizer=torch.optim.Adam,
+                 q_loss=torch.nn.MSELoss(),
                  grad_clip_radius=None):
 
-        if use_boltzmann:
-            warnings.warn("Using a Boltzmann action-selection policy can "
-                          "lead to instability if selection probabilities "
-                          "are not carefully chosen. Take care to use a "
-                          "reasonable temperature decay schedule.")
+        self.batch_size = batch_size
+        self.action_dim = action_dim
+        self.buffer = TorchBuffer(maxlen=buff_maxlen)
 
-        RLAgent.__init__(self, batch_size, action_dim, buff_len)
-
-        assert torch.is_tensor(actions), "actions must be stored as tensors"
-        assert actions.shape[1] == self.action_dim, "dimension incorrect"
-
-        self.actions = actions
-        self.q = q_network
+        self.q = q_net
         self.target_q = copy.deepcopy(self.q)
 
         self.__cuda_enabled = enable_cuda
         self.enable_cuda(self.__cuda_enabled, warn=False)
 
         self.q_optim = optimizer(self.q.parameters(), lr=q_lr)
-        self.q_loss = torch.nn.MSELoss()
+        self.q_loss = q_loss
 
         self.gamma = discount_gamma
         self.tau = polyak_tau
         self.eps = greedy_eps
-        self.use_boltzmann = use_boltzmann
-        if use_boltzmann:
-            self.temp = boltzmann_temp
 
         self.state = None
         self.action = None
@@ -322,138 +310,74 @@ class DoubleDQNAgent(RLAgent):
         return self.__cuda_enabled
 
     def enable_cuda(self, enable_cuda=True, warn=True):
-        """Enable or disable cuda and update models and actions."""
+        """
+        Enable or disable CUDA and update models and actions.
+        """
 
         if warn:
-            warnings.warn("Converting models between 'cpu' and 'cuda' after "
-                          "initializing optimizers can give errors when using "
-                          "optimizers other than SGD or Adam!")
+            warnings.warn("Converting between 'cpu' and 'cuda' after "
+                          "initializing the optimizer can give errors when "
+                          "using optimizers other than SGD or Adam!")
 
         self.__cuda_enabled = enable_cuda
         self.device = torch.device(
-                'cuda' if torch.cuda.is_available() and self.__cuda_enabled \
-                else 'cpu')
+            'cuda' if torch.cuda.is_available() and self.__cuda_enabled \
+            else 'cpu')
         self.q.to(self.device)
         self.target_q.to(self.device)
-        self.actions = self.actions.to(self.device)
-
-    def _get_q_inputs(self, state):
-        """
-        Takes state and returns the corresponding state-action pairs for
-        all actions.
-        """
-
-        if not torch.is_tensor(state):
-            state = torch.FloatTensor(state)
-        if len(state.shape) == 1:
-            state = state.unsqueeze(dim=0)
-        state = state.to(self.device)
-        state_stacked = torch.cat(self.actions.shape[0]*[state])
-        q_inputs = torch.cat([state_stacked, self.actions], dim=1)
-
-        return q_inputs
-
-    def _argmax_action(self, state):
-        """
-        Returns the action that the q function says is best
-        for the current state.
-        """
-
-        with torch.no_grad():
-            vals = self.q(self._get_q_inputs(state))
-
-        return self.actions[torch.argmax(vals)]
-
-    def _argmax_actions(self, states):
-        """
-        Vectorized version of _argmax_action.
-        """
-
-        return torch.stack(
-            [self._argmax_action(state) for state in states], dim=0)
 
     def _polyak_average_params(self, params1, params2):
         """
-        Compute polyak average of params1 and params2 using self.tau,
-        then copy the result to params1.
+        Compute Polyak average of params1 and params2 using tau. Copy result
+        to params1.
         """
 
         for param1, param2 in zip(params1, params2):
-            param1.data.copy_(
-                    self.tau*param2.data + (1.0 - self.tau)*param1.data)
-            
-    def _boltzmann_action(self, state, temp=None):
-        """
-        Use a Boltzmann distribution with specified temperature to select
-        an action based on the current state.
+            param1.data.copy_(self.tau * param2.data \
+                              + (1.0 - self.tau) * param1.data)
 
-        If no temperature is given, use the last temperature used.
+    def sample_action(self, state):
+        """
+        Sample and action epsilon-greedily.
         """
 
-        self.state = state
-        if temp is not None:
-            self.temp = temp
+        self.state = state.to(self.device)
 
-        probs = self.q(self._get_q_inputs(state)).detach().cpu().numpy()
-        probs = np.exp((probs - min(probs)) / self.temp) # numerical stability
-        probs /= probs.sum()
-        idx = np.random.choice(np.arange(self.actions.shape[0]),
-                               p=probs.flatten())
-
-        return self.actions[idx].detach().cpu().numpy()
-
-    def _epsilon_greedy(self, state, eps=None):
-        """
-        Select an action epsilon-greedily.
-        """
-
-        if eps is not None:
-            self.eps = eps
-
-        if np.random.random() < self.eps:
-            self.action = self.actions[np.random.choice(
-                np.arange(self.actions.shape[0]))].detach().cpu().numpy()
+        self.action = np.random.randint(0, self.num_actions) \
+                if np.random.uniform() < self.eps \
+                else self.q
+        if np.random.uniform() < self.eps:
+            self.action = torch.randint(high=self.num_actions, size=(1,1))
         else:
-            self.action = self._argmax_action(state).detach().cpu().numpy()
-
-        return self.action
-
-    def sample_action(self, state, param=None):
-        """
-        Depending on initialization, uses a Boltzmann or epsilon-greedy
-        action-selection procedure.
-        """
-
-        self.state = state
-
-        self.action = self._boltzmann_action(state, param) if self.use_boltzmann \
-                else self._epsilon_greedy(state, param)
+            with torch.no_grad():
+                self.action = self.q(self.state).max(1)[1].view(1,1)
 
         return self.action
 
     def update(self, reward, next_state, done):
-        """Perform the update."""
+        """
+        Add a new sample to the buffer and perform an update.
+        """
 
-        new_sample = (self.state, self.action, reward, next_state, done)
-        self.buffer.append(new_sample)
+        assert not None in {self.state, self.action}, 'sample_action must ' \
+            + 'be called before update'
+
+        self.buffer.append(self.state, self.action, reward, next_state, done)
 
         if len(self.buffer) >= self.batch_size:
-            states, actions, rewards, next_states, dones = wesutils.arrays_to_tensors(
-                self.buffer.sample(self.batch_size), self.device)
 
-            # assemble inputs for target_q and q
-            target_actions = self._argmax_actions(next_states)
-            target_q_inputs = torch.cat([next_states, target_actions], dim=1)
-            q_inputs = torch.cat([states, actions], dim=1)
+            states, actions, rewards, next_states, dones = \
+                    self.buffer.sample(self.batch_size, self.device)
 
-            # compute target values
             with torch.no_grad():
-                target_vals = rewards.unsqueeze(dim=1) + \
-                        (1-dones.unsqueeze(dim=1)) * \
-                        (self.gamma * self.target_q(target_q_inputs))
+                target_vals = rewards + \
+                        (1 - dones) * \
+                        self.gamma * \
+                        self.target_q(next_states).max(1)[0].unsqueeze(dim=1)
 
-            # perform gradient step, clipping gradients if desired
-            loss = self.q_loss(self.q(q_inputs), target_vals)
+            # import pdb; pdb.set_trace()
+
+            loss = self.q_loss(self.q(states).gather(1, actions), target_vals)
             self.q_optim.zero_grad()
             loss.backward()
             if self.grad_clip_radius is not None:
@@ -461,37 +385,41 @@ class DoubleDQNAgent(RLAgent):
                                                self.grad_clip_radius)
             self.q_optim.step()
 
-            # update target_q parameters
             self._polyak_average_params(self.target_q.parameters(),
                                         self.q.parameters())
 
     def save_checkpoint(self, filename):
-        """Save state_dicts of models and optimizers."""
-        
-        torch.save({
-                'using_cuda': self.__cuda_enabled,
-                'q_state_dict': self.q.state_dict(),
-                'target_q_state_dict': self.target_q.state_dict(),
-                'q_optimizer_state_dict': self.q_optim.state_dict(),
-        }, filename)
-    
+        """
+        Save state_dicts of models and optimizers. Allows resumption of
+        training at a later time.
+        """
+
+        torch.save({'using_cuda': self.__cuda_enabled,
+                    'q_state_dict': self.q.state_dict(),
+                    'target_q_state_dict': self.target_q.state_dict(),
+                    'q_optimizer_state_dict': self.q_optim.state_dict(),
+                   }, filename)
+
     def load_checkpoint(self, filename, continue_training=True):
-        """Load state_dicts for models and optimizers."""
-        
+        """
+        Load state_dicts for models and optimizers and continue training,
+        if specified.
+        """
+
         checkpoint = torch.load(filename)
-        
+
         self.q.load_state_dict(checkpoint['q_state_dict'])
         self.target_q.load_state_dict(checkpoint['target_q_state_dict'])
         self.q_optim.load_state_dict(checkpoint['q_optimizer_state_dict'])
-        
+
         if continue_training:
             self.q.train()
             self.target_q.train()
-            
+
         else:
             self.q.eval()
             self.target_q.eval()
-        
+
         self.enable_cuda(checkpoint['using_cuda'], warn=False)
 
 
