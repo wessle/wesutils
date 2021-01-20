@@ -52,7 +52,7 @@ def two_layer_net(input_dim, output_dim,
     return net
 
 
-class DQN(nn.Module):
+class ConvolutionalDQN(nn.Module):
     """
     Convolutional neural network for use as a deep Q network in a deep
     Q-learning algorithm.
