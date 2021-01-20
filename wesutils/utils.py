@@ -175,47 +175,55 @@ class Buffer:
 
 class TorchBuffer:
     """
-    Buffer for storing tuples of flat torch tensors as a 2D torch tensor.
-
-    Note that sampling occurs with replacement.
+    Buffer for easily storing and sampling torch tensors of experiences
+    for batch training of RL algorithms.
     """
 
-    def __init__(self, maxlen=100000):
+    Experience = namedtuple('Experience', ('state', 'action', 'reward',
+                                           'next_state', 'done'))
 
-        self.maxlen = maxlen
-        self.currlen = 0
-        self.currindex = 0
-        self.tensorlens = None
-        self.__buffer = None
+    def __init__(self, maxlen=100000):
+        self.__buffer = deque(maxlen=maxlen)
 
     @property
     def buffer(self):
         return self.__buffer
 
     def __len__(self):
-        return self.currlen
+        return len(self.__buffer)
 
-    def append(self, tensor_tuple):
-        """Add a new entry to the buffer."""
+    def append(self, state, action, reward, next_state, done):
+        """
+        Append to the buffer.
 
-        assert all(torch.is_tensor(elem) for elem in tensor_tuple), \
-                'All elements of the input tuple must be torch tensors'
+        NOTE: state, action, reward, next_state, and done should all be
+        torch tensors of an appropriate kind. The burden is on the user
+        to ensure this, as no checks are performed.
+        """
 
-        tensor_tuple = tuple(torch.flatten(elem) for elem in tensor_tuple)
+        self.__buffer.append(
+            self.Experience(state, action, reward, next_state, done)
+        )
 
-        if self.__buffer is None:
-            self.tensorlens = [len(elem) for elem in tensor_tuple]
-            self.__buffer = torch.zeros(self.maxlen, sum(self.tensorlens))
-        self.__buffer[self.currindex] = torch.cat(tensor_tuple, 0)
+    def sample(self, batch_size, device=torch.device('cpu')):
+        """
+        Sample a batch of experiences:
+            states, actions, rewards, next_states, dones
+        and return them in nice torch.tensor form.
 
-        self.currlen = min(self.currlen + 1, self.maxlen)
-        self.currindex = (self.currindex + 1) % self.maxlen
+        TODO: be more concise.
+        """
 
-    def sample(self, batch_size):
-        """Randomly sample a batch."""
+        batch_size = min(batch_size, len(self))
+        indices = np.random.randint(0, len(self), size=(batch_size,))
+        sample = [self.__buffer[i] for i in indices]
+        states = torch.cat([elem.state for elem in sample]).to(device)
+        actions = torch.cat([elem.action for elem in sample]).to(device)
+        rewards = torch.cat([elem.reward for elem in sample]).to(device)
+        next_states = torch.cat([elem.next_state for elem in sample]).to(device)
+        dones = torch.cat([elem.done for elem in sample]).to(device)
 
-        indices = torch.randint(0, self.currlen, size=(batch_size,))
-        return torch.split(self.__buffer[indices], self.tensorlens, 1)
+        return states, actions, rewards, next_states, dones
 
 
 class HeapBuffer:
